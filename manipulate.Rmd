@@ -1,0 +1,168 @@
+---
+title: "Manipulate"
+author: "Ehrman AD"
+date: "June 28, 2021"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    code_folding: "show"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Read online table
+
+
+### Download table (`*.csv`)
+
+```{r}
+# set variables
+csv_url  <- "https://oceanview.pfeg.noaa.gov/erddap/tabledap/cciea_AC.csv"
+dir_data <- "data"
+
+# derived variables
+csv <- file.path(dir_data, basename(csv_url))
+
+# create directory
+dir.create(dir_data)
+
+# download file
+download.file(csv_url, csv)
+```
+
+### Read table `read.csv()`
+
+```{r}
+# attempt to read csv
+d <- read.csv(csv)
+
+# show the data frame
+#d
+
+#convert to tibble
+#run the code
+tibble::tibble(d)
+
+#notice that it has read everything as characters.
+#this is because the first line after headers is units.
+#so we need to skip the first two lines.
+
+# read csv by skipping first two lines, so no header
+d <- read.csv(csv, skip = 2, header = FALSE)
+#tibble::tibble(d)
+
+# update data frame to original column names
+names(d) <- names(read.csv(csv))
+#tibble::tibble(d)
+```
+
+### Show table `DT::datatable()`
+```{r}
+# show table
+DT::datatable(d)
+```
+
+## Wrangle data
+
+### Manipulate with `dplyr`
+
+```{r}
+library(dplyr)
+
+d <- d %>%
+  #tibble
+  tibble() %>%
+  #mutate time column so it is actually an as.Date() column 
+  mutate(time = as.Date(substr(time,1,10))) %>%
+  #select columns
+  select(time, starts_with("total_fisheries_revenue")) %>%
+  #filter rows
+  filter(time >= as.Date("1981-01-01"))
+
+DT::datatable(d)
+```
+
+### Tidy with 'tidyr'
+
+Use function pivot_longer() to turn into long format data:
+name = the column indicating which state
+value = the column holding fisheries revenue data
+
+```{r}
+library(tidyr)
+
+d <- d %>%
+  tidyr::pivot_longer(-time)
+
+DT::datatable(d)
+```
+
+### Summarize with 'dplyr'
+
+```{r}
+library(stringr)
+
+d <- d %>%
+  #create new column with mutate called 'region' that replace the 'name' column.
+  #in that column, remove the front part of the column names ("total_fishers_revenue")
+  #so that all is left are the state abbreviations. This is done by replacing the
+  #string with nothing ("")
+  mutate(
+    region = str_replace(name, "total_fisheries_revenue_", "")) %>%
+  select(time, region, value)
+DT::datatable(d)
+
+
+d_sum <- d %>%
+  group_by(region) %>%
+  #use summarize to calculate average fisheries revenue by region
+  summarize(
+    avg_revenue = mean(value))
+DT::datatable(d_sum) %>%
+  #format avg_revenue to proper currency
+  DT::formatCurrency("avg_revenue")
+```
+
+### Apply functions with `purrr` on a `nest`'ed `tibble`
+
+One of the major innovations of a tibble is the ability to store nearly any object in the cell of a table as a list column. This could be an entire table, a fitted model, plot, etc. Let’s try out these features driven by the question: What’s the trend over time for fishing revenue by region?
+
+The creation of tables within cells is most commonly done with tidyr’s nest() function based on a grouping of values in a column, i.e. dplyr’s group_by().
+
+The purrr R package provides functions to operate on list objects, in this case the nested data. and application of functions on these data with purrr’s map function. We can feed the data object into an anonymous function where we fit the linear model lm() and return a list object. To then extract the coefficient from the model coef(summary()), we want to return a type of double (not another list object), so we use the map_dbl() function.
+
+```{r}
+library(purrr)
+library(tidyr)
+
+n <- d %>% 
+  group_by(region) %>% 
+  nest(
+    data = c(time, value))
+#now each cell entry under the column "data" is actually 2 lists:
+#one for all times values associated with the state listed under "region",
+#one one for all the mean revenue values
+n
+
+#use mutate to create a new column for the models ('lm')
+#and a column with the extracted slope coefficient (m)
+n <- n %>% 
+  mutate(
+    lm    = map(data, function(d){
+      lm(value ~ time, d) } ),
+    trend = map_dbl(lm, function(m){
+      coef(summary(m))["time","Estimate"] }))
+n
+
+#pull out only the desired final outcomes
+n %>% 
+  select(region, trend) %>% 
+  DT::datatable()
+```
+
